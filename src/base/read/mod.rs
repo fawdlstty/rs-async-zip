@@ -190,6 +190,7 @@ where
         extra_fields,
         comment,
         data_descriptor: header.flags.data_descriptor,
+        password: None,
     };
 
     Ok(StoredZipEntry { entry, file_offset, header_size: header_size + trailing_size })
@@ -254,6 +255,7 @@ where
         extra_fields,
         comment: String::new().into(),
         data_descriptor: header.flags.data_descriptor,
+        password: None,
     };
 
     Ok(Some(entry))

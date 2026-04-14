@@ -42,6 +42,7 @@ pub mod error;
 #[cfg(feature = "tokio")]
 pub mod tokio;
 
+pub(crate) mod crypto;
 pub(crate) mod date;
 pub(crate) mod entry;
 pub(crate) mod file;

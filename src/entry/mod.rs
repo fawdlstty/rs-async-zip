@@ -45,6 +45,7 @@ pub struct ZipEntry {
     pub(crate) extra_fields: Vec<ExtraField>,
     pub(crate) comment: ZipString,
     pub(crate) data_descriptor: bool,
+    pub(crate) password: Option<Vec<u8>>,
 }
 
 impl From<ZipEntryBuilder> for ZipEntry {
@@ -77,6 +78,7 @@ impl ZipEntry {
             extra_fields: Vec::new(),
             comment: String::new().into(),
             data_descriptor: false,
+            password: None,
         }
     }
 
