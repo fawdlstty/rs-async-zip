@@ -3,19 +3,17 @@
 
 pub mod builder;
 
-use std::ops::Deref;
-
-use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
-
 use crate::entry::builder::ZipEntryBuilder;
 use crate::error::{Result, ZipError};
 use crate::spec::{
     attribute::AttributeCompatibility,
     consts::LFH_SIGNATURE,
-    header::{ExtraField, LocalFileHeader},
+    header::{ExtraField, GeneralPurposeFlag, LocalFileHeader},
     Compression,
 };
 use crate::{string::ZipString, ZipDateTime};
+use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
+use std::ops::Deref;
 
 /// An immutable store of data about a ZIP entry.
 ///
@@ -167,7 +165,7 @@ impl ZipEntry {
 #[derive(Clone)]
 pub struct StoredZipEntry {
     pub(crate) entry: ZipEntry,
-    // pub(crate) general_purpose_flag: GeneralPurposeFlag,
+    pub(crate) general_purpose_flag: GeneralPurposeFlag,
     pub(crate) file_offset: u64,
     pub(crate) header_size: u64,
 }
@@ -176,6 +174,11 @@ impl StoredZipEntry {
     /// Returns the offset in bytes to where the header of the entry starts.
     pub fn header_offset(&self) -> u64 {
         self.file_offset
+    }
+
+    /// Returns whether this entry is encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.general_purpose_flag.encrypted
     }
 
     /// Returns the combined size in bytes of the header, the filename, and any extra fields.

@@ -59,7 +59,7 @@ impl<'b, W: AsyncWrite + Unpin> EntryStreamWriter<'b, W> {
 
         // Write encryption header if password is set (after LFH, before data)
         let encryption_header = if let Some(ref password) = entry.password {
-            use crate::crypto::ZipCrypto;
+            use crate::crypto::crypto::ZipCrypto;
             // For streaming, we don't know the CRC yet, so use 0 as verify byte
             let verify_byte = 0u8;
             let mut crypto = ZipCrypto::new(password);
@@ -105,7 +105,7 @@ impl<'b, W: AsyncWrite + Unpin> EntryStreamWriter<'b, W> {
 
         // Write encryption header if password is set (after LFH, before data)
         let encryption_header = if let Some(ref password) = entry.password {
-            use crate::crypto::ZipCrypto;
+            use crate::crypto::crypto::ZipCrypto;
             let verify_byte = ((entry.crc32 >> 24) & 0xFF) as u8;
             let mut crypto = ZipCrypto::new(password);
             Some(crypto.encrypt_header(verify_byte))

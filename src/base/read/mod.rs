@@ -193,7 +193,12 @@ where
         password: None,
     };
 
-    Ok(StoredZipEntry { entry, file_offset, header_size: header_size + trailing_size })
+    Ok(StoredZipEntry {
+        entry,
+        general_purpose_flag: header.flags,
+        file_offset,
+        header_size: header_size + trailing_size,
+    })
 }
 
 pub(crate) async fn lfh<R>(mut reader: R) -> Result<Option<ZipEntry>>

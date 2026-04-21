@@ -177,7 +177,7 @@ impl<'b, 'c, W: AsyncWrite + Unpin> EntryWholeWriter<'b, 'c, W> {
 
         // Check if encryption is needed
         let (encrypted_data, new_compressed_size) = if let Some(ref password) = self.entry.password {
-            use crate::crypto::ZipCrypto;
+            use crate::crypto::crypto::ZipCrypto;
             // Use high byte of CRC as verify byte
             let verify_byte = ((self.entry.crc32 >> 24) & 0xFF) as u8;
             let mut crypto = ZipCrypto::new(password);
