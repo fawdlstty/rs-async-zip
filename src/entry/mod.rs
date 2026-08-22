@@ -9,7 +9,7 @@ use crate::spec::{
     attribute::AttributeCompatibility,
     consts::LFH_SIGNATURE,
     header::{ExtraField, GeneralPurposeFlag, LocalFileHeader},
-    Compression,
+    compression::Compression,
 };
 use crate::{string::ZipString, ZipDateTime};
 use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
