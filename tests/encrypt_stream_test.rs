@@ -10,6 +10,7 @@
 //! - this crate's own read path plus the public `ZipCrypto` primitive for manual decryption,
 //! - the system `unzip` and Python's `zipfile` module (see dedicated tests below).
 
+#![cfg(feature = "deflate")]
 #![allow(deprecated)]
 
 use async_zip::base::read::mem::ZipFileReader;
@@ -105,14 +106,11 @@ async fn build_mixed_encrypted_zip() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     }
 
     {
-        let opts = ZipEntryBuilder::new(PRECOMP_ENTRY.into(), Compression::Deflate)
-            .password(PASSWORD.to_vec());
+        let opts = ZipEntryBuilder::new(PRECOMP_ENTRY.into(), Compression::Deflate).password(PASSWORD.to_vec());
         let crc = crc32(&precomp_data);
         let compressed = compress(opts.current(), &precomp_data).await;
-        let opts = opts
-            .crc32(crc)
-            .compressed_size(compressed.len() as u64)
-            .uncompressed_size(precomp_data.len() as u64);
+        let opts =
+            opts.crc32(crc).compressed_size(compressed.len() as u64).uncompressed_size(precomp_data.len() as u64);
         let mut entry_writer = writer.write_entry_stream_precompressed(opts).await.unwrap();
         write_chunked(&mut entry_writer, &compressed, &[1, 500, 13]).await;
         entry_writer.close().await.unwrap();
@@ -175,8 +173,7 @@ async fn zip_deflate_stream_encrypted_roundtrip() {
     let plain_entry = &plain_reader.file().entries()[0];
     assert!(!plain_entry.is_encrypted());
     let plain_offset = lfh_data_offset(plain_reader.data(), plain_entry.header_offset());
-    let plain_deflate =
-        &plain_reader.data()[plain_offset..plain_offset + plain_entry.compressed_size() as usize];
+    let plain_deflate = &plain_reader.data()[plain_offset..plain_offset + plain_entry.compressed_size() as usize];
 
     assert_eq!(&decrypted_deflate[12..], plain_deflate, "decrypted body must equal the unencrypted deflate stream");
     assert_eq!(enc_entry.compressed_size(), plain_entry.compressed_size() + 12);
@@ -223,8 +220,7 @@ async fn zip_deflate_precompressed_stream_encrypted_roundtrip() {
         let mut writer = ZipFileWriter::new(&mut bytes);
         let opts = ZipEntryBuilder::new("precomp.bin".into(), Compression::Deflate).password(PASSWORD.to_vec());
         let compressed = compress(opts.current(), &data).await;
-        let opts =
-            opts.crc32(crc).compressed_size(compressed.len() as u64).uncompressed_size(data.len() as u64);
+        let opts = opts.crc32(crc).compressed_size(compressed.len() as u64).uncompressed_size(data.len() as u64);
         let mut entry_writer = writer.write_entry_stream_precompressed(opts).await.unwrap();
         write_chunked(&mut entry_writer, &compressed, &[1, 500, 13]).await;
         entry_writer.close().await.unwrap();
@@ -242,10 +238,8 @@ async fn zip_deflate_precompressed_stream_encrypted_roundtrip() {
     let offset = lfh_data_offset(reader.data(), entry.header_offset());
     let region = &reader.data()[offset..offset + entry.compressed_size() as usize];
     let decrypted = decrypt_zip_crypto(region, PASSWORD);
-    assert_eq!(&decrypted[12..], &compress(
-        ZipEntryBuilder::new("precomp.bin".into(), Compression::Deflate).current(),
-        &data,
-    ).await);
+    let expected = compress(ZipEntryBuilder::new("precomp.bin".into(), Compression::Deflate).current(), &data).await;
+    assert_eq!(&decrypted[12..], &expected);
 }
 
 /// compressed_size accounting: the encrypted entry's size covers the 12-byte encryption
@@ -282,6 +276,7 @@ async fn stream_encrypted_compressed_size_accounting() {
 
 /// System `unzip -P <pwd> -t` must accept the whole encrypted archive (written to /tmp so
 /// it can also be inspected manually).
+#[cfg(unix)]
 #[tokio::test]
 async fn unzip_system_verify_stream_encrypted() {
     let (bytes, ..) = build_mixed_encrypted_zip().await;
@@ -305,6 +300,7 @@ async fn unzip_system_verify_stream_encrypted() {
 
 /// Python's `zipfile` module must read every streaming-encrypted entry with the password and
 /// yield the original content (length and CRC32 compared on the Rust side).
+#[cfg(unix)]
 #[tokio::test]
 async fn python_zipfile_verify_stream_encrypted() {
     let (bytes, deflate_data, stored_data, precomp_data) = build_mixed_encrypted_zip().await;
@@ -332,16 +328,9 @@ for name in sys.argv[3:]:
         .expect("python3 binary not available");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "python zipfile verification failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+    assert!(output.status.success(), "python zipfile verification failed:\nstdout:\n{stdout}\nstderr:\n{stderr}");
 
-    let expected = [
-        (DEFLATE_ENTRY, &deflate_data),
-        (STORED_ENTRY, &stored_data),
-        (PRECOMP_ENTRY, &precomp_data),
-    ];
+    let expected = [(DEFLATE_ENTRY, &deflate_data), (STORED_ENTRY, &stored_data), (PRECOMP_ENTRY, &precomp_data)];
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
         let mut parts = line.split_whitespace();
         let name = parts.next().unwrap();

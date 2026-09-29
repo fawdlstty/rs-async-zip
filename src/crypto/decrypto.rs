@@ -1,118 +1,171 @@
-// Copyright (c) 2022 Harry [Majored] [hello@majored.pw]
+// Copyright (c) 2024 Harry [Majored] [hello@majored.pw]
 // MIT License (https://github.com/Majored/rs-async-zip/blob/main/LICENSE)
 
-use crate::crypto::crypto::ZipCrypto;
+use crate::crypto::crypto::{ENCRYPTION_HEADER_SIZE, ZipCrypto};
+use crate::error::ZipError;
 
+use std::io::ErrorKind;
 use std::pin::Pin;
+use std::task::ready;
 use std::task::{Context, Poll};
 
 use futures_lite::io::{AsyncBufRead, AsyncRead};
 use pin_project::pin_project;
 
-/// A wrapping reader which handles ZipCrypto decryption
-#[pin_project(project = DecryptedReaderProj)]
-pub(crate) struct DecryptedReader<R> {
-    #[pin]
-    inner: R,
-    crypto: ZipCrypto,
-    remaining_encryption_header: usize,
+/// How many ciphertext bytes are pulled from the inner reader per round of decryption.
+const READ_CHUNK: usize = 2048;
+
+/// Per-reader decryption state, only present when a password was provided.
+struct CryptState {
+    cipher: ZipCrypto,
+    /// The expected value of the final decrypted encryption header byte, used to verify the
+    /// password. This is the high byte of the CRC32 for files without a data descriptor, and the
+    /// high byte of the last modification time otherwise (as per PKWARE's APPNOTE).
+    check_byte: u8,
+    /// Whether the encryption header has been consumed and the password verified. The header is
+    /// processed exactly once, as running it through the cipher a second time would desynchronise
+    /// the keystream.
+    verified: bool,
+    /// The encrypted encryption header as read from the inner reader.
+    header: [u8; ENCRYPTION_HEADER_SIZE],
+    header_len: usize,
+    /// Decrypted bytes which have not yet been handed to the caller.
+    buf: Vec<u8>,
+    pos: usize,
 }
 
-impl<R> DecryptedReader<R>
-where
-    R: AsyncBufRead + Unpin,
-{
-    /// Constructs a new wrapping reader with password for decryption.
-    /// The encryption header is 12 bytes and needs special handling.
-    pub(crate) fn new(reader: R, password: &[u8]) -> Self {
+impl CryptState {
+    /// Pulls more ciphertext from the inner reader, feeding the encryption header through the
+    /// cipher first, and fills the decrypted buffer. Returns once the buffer holds at least one
+    /// byte, or EOF is reached.
+    fn poll_fill<R: AsyncRead>(&mut self, mut inner: Pin<&mut R>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.pos < self.buf.len() {
+            return Poll::Ready(Ok(()));
+        }
+
+        self.buf.clear();
+        self.pos = 0;
+
+        if !self.verified {
+            while self.header_len < ENCRYPTION_HEADER_SIZE {
+                let read = ready!(AsyncRead::poll_read(inner.as_mut(), cx, &mut self.header[self.header_len..]))?;
+                if read == 0 {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "truncated ZipCrypto encryption header",
+                    )));
+                }
+                self.header_len += read;
+            }
+
+            let mut last = 0u8;
+            for &byte in self.header.iter() {
+                last = self.cipher.decrypt_byte(byte);
+            }
+
+            if last != self.check_byte {
+                return Poll::Ready(Err(std::io::Error::new(ErrorKind::InvalidData, ZipError::InvalidPassword)));
+            }
+
+            self.verified = true;
+        }
+
+        let mut chunk = [0u8; READ_CHUNK];
+        let read = ready!(AsyncRead::poll_read(inner.as_mut(), cx, &mut chunk))?;
+        if read == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        self.buf.extend_from_slice(&chunk[..read]);
+        for byte in self.buf.iter_mut() {
+            *byte = self.cipher.decrypt_byte(*byte);
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// A wrapping reader which decrypts ZipCrypto-encrypted data before passing it to the caller.
+///
+/// The 12-byte encryption header which precedes the ciphertext is consumed transparently and its
+/// check byte verified against the expected value, failing early with
+/// [`ZipError::InvalidPassword`] if the password is incorrect.
+#[pin_project(project = DecryptingReaderProj)]
+pub(crate) struct DecryptingReader<R> {
+    #[pin]
+    inner: R,
+    state: Option<CryptState>,
+}
+
+impl<R> DecryptingReader<R> {
+    /// Constructs a new wrapping reader which decrypts data with the given password.
+    ///
+    /// `check_byte` is the expected final decrypted byte of the encryption header, used to verify
+    /// the password. See [`CryptState`].
+    pub(crate) fn new(inner: R, password: &[u8], check_byte: u8) -> Self {
         Self {
-            inner: reader,
-            crypto: ZipCrypto::new(password),
-            remaining_encryption_header: 12, // ZipCrypto encryption header is 12 bytes
+            inner,
+            state: Some(CryptState {
+                cipher: ZipCrypto::new(password),
+                check_byte,
+                verified: false,
+                header: [0; ENCRYPTION_HEADER_SIZE],
+                header_len: 0,
+                buf: Vec::new(),
+                pos: 0,
+            }),
         }
     }
 
-    /// Consumes this reader and returns the inner value.
+    /// Constructs a new wrapping reader which passes data through unmodified.
+    pub(crate) fn passthrough(inner: R) -> Self {
+        Self { inner, state: None }
+    }
+
+    /// Consumes this wrapper and returns the inner reader.
     pub(crate) fn into_inner(self) -> R {
         self.inner
     }
 }
 
-impl<R> AsyncRead for DecryptedReader<R>
-where
-    R: AsyncBufRead + Unpin,
-{
+impl<R: AsyncRead + Unpin> AsyncRead for DecryptingReader<R> {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
         let mut this = self.project();
 
-        // First, consume the encryption header
-        if *this.remaining_encryption_header > 0 {
-            let mut header_buf = vec![0u8; *this.remaining_encryption_header];
+        let Some(state) = this.state.as_mut() else {
+            return this.inner.poll_read(cx, buf);
+        };
 
-            // Read encryption header bytes using a simple approach
-            let inner = &mut this.inner;
-            let mut inner_pin = Pin::new(inner);
+        ready!(CryptState::poll_fill(state, this.inner.as_mut(), cx))?;
 
-            match AsyncRead::poll_read(inner_pin.as_mut(), cx, &mut header_buf) {
-                Poll::Ready(Ok(n)) => {
-                    if n == 0 {
-                        return Poll::Ready(Ok(0));
-                    }
+        let remaining = &state.buf[state.pos..];
+        let n = buf.len().min(remaining.len());
+        buf[..n].copy_from_slice(&remaining[..n]);
+        state.pos += n;
 
-                    // Process header bytes through crypto to get to the right state
-                    for &byte in &header_buf[..n] {
-                        this.crypto.decrypt_byte(byte);
-                    }
-
-                    *this.remaining_encryption_header -= n;
-
-                    // If we've consumed all header bytes, continue to read actual data
-                    if *this.remaining_encryption_header == 0 {
-                        // Continue to read data below
-                    } else {
-                        return Poll::Ready(Ok(n));
-                    }
-                }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-
-        // Read and decrypt actual data
-        let inner = &mut this.inner;
-        let mut inner_pin = Pin::new(inner);
-
-        match AsyncRead::poll_read(inner_pin.as_mut(), cx, buf) {
-            Poll::Ready(Ok(n)) => {
-                if n == 0 {
-                    Poll::Ready(Ok(0))
-                } else {
-                    // Decrypt the bytes
-                    for i in 0..n {
-                        buf[i] = this.crypto.decrypt_byte(buf[i]);
-                    }
-                    Poll::Ready(Ok(n))
-                }
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
+        Poll::Ready(Ok(n))
     }
 }
 
-impl<R> AsyncBufRead for DecryptedReader<R>
-where
-    R: AsyncBufRead + Unpin,
-{
+impl<R: AsyncBufRead + Unpin> AsyncBufRead for DecryptingReader<R> {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
-        // For BufRead, we need to decrypt the buffered data
-        // This is complex because we need to maintain state
-        // For simplicity, we'll delegate to AsyncRead
-        self.poll_read(cx, &mut []).map(|r| r.map(|_| &[][..]))
+        let mut this = self.project();
+
+        let Some(state) = this.state.as_mut() else {
+            return this.inner.poll_fill_buf(cx);
+        };
+
+        ready!(state.poll_fill(this.inner.as_mut(), cx))?;
+        Poll::Ready(Ok(&state.buf[state.pos..]))
     }
 
     fn consume(self: Pin<&mut Self>, amt: usize) {
-        // This is a no-op for our use case since we handle consumption in poll_read
-        let _ = amt;
+        let this = self.project();
+
+        let Some(state) = this.state.as_mut() else {
+            return this.inner.consume(amt);
+        };
+
+        state.pos = (state.pos + amt).min(state.buf.len());
     }
 }

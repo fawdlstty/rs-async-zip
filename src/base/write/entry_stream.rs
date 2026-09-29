@@ -66,9 +66,10 @@ impl<'b, W: AsyncWrite + Unpin> EntryStreamWriter<'b, W> {
         // that the key state stays continuous between them.
         let mut crypto = entry.password.as_ref().map(|p| ZipCrypto::new(p));
         if let Some(c) = crypto.as_mut() {
-            // For streaming, we don't know the CRC yet, so use 0 as verify byte
-            let verify_byte = 0u8;
-            let header = c.encrypt_header(verify_byte);
+            // Streaming entries always set the data-descriptor flag, so the check byte is the
+            // high byte of the DOS time rather than of the CRC (APPNOTE.TXT).
+            let check_byte = (entry.last_modification_date().time >> 8) as u8;
+            let header = c.encrypt_header(check_byte);
             writer.writer.write_all(&header).await?;
         }
 
@@ -112,10 +113,10 @@ impl<'b, W: AsyncWrite + Unpin> EntryStreamWriter<'b, W> {
         // that the key state stays continuous between them.
         let mut crypto = entry.password.as_ref().map(|p| ZipCrypto::new(p));
         if let Some(c) = crypto.as_mut() {
-            // Streaming entries always set the data-descriptor flag, so the verify byte must
-            // match the high byte of the DOS time (1980-00-00 00:00 -> 0), not the CRC.
-            let verify_byte = 0u8;
-            let header = c.encrypt_header(verify_byte);
+            // Streaming entries always set the data-descriptor flag, so the check byte is the
+            // high byte of the DOS time rather than of the CRC (APPNOTE.TXT).
+            let check_byte = (entry.last_modification_date().time >> 8) as u8;
+            let header = c.encrypt_header(check_byte);
             writer.writer.write_all(&header).await?;
         }
 

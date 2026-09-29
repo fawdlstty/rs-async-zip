@@ -5,5 +5,4 @@ pub mod crypto;
 pub(crate) mod decrypto;
 
 pub use crypto::{ZipCrypto, ENCRYPTION_HEADER_SIZE};
-#[allow(unused_imports)]
-pub(crate) use decrypto::DecryptedReader;
+pub(crate) use decrypto::DecryptingReader;
