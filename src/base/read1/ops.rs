@@ -7,6 +7,7 @@ use futures_lite::AsyncBufRead;
 use futures_lite::AsyncSeekExt;
 use futures_lite::AsyncRead;
 use futures_lite::AsyncSeek;
+use futures_lite::AsyncReadExt;
 
 #[cfg(feature = "tracing")]
 use tracing::{instrument, trace};
@@ -49,8 +50,10 @@ impl<'o, R: AsyncRead + Unpin> Ops<'o, R> {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self), level = "trace"))]
-    pub async fn lf(&mut self) -> Result<LF> {
-        self.assert_signature(Signature::LFH).await?;
+    pub async fn lf(&mut self, assert_signature: bool) -> Result<LF> {
+        if assert_signature {
+            self.assert_signature(Signature::LFH).await?;
+        }
 
         let options = self.options;
         let lf = crate::spec::headers1::read_record::<LFH, LF, R>(&mut self.reader, |lfh| {
@@ -91,6 +94,17 @@ impl<'o, R: AsyncRead + Unpin> Ops<'o, R> {
             Ok(usize::from(eocdrh.comment_length))
         }).await
     }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self), level = "trace"))]
+    pub async fn validate_eoa_is_eor(&mut self) -> Result<()> {
+        if self.options.validate_eoa_is_eor {
+            if self.reader.read(&mut [0u8; 1]).await? != 0 {
+                return Err(ZipError::EORIsNotEOA);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub(crate) struct SeekOps<R> {
@@ -115,9 +129,9 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> SeekOps<R> {
         self.reader.seek(SeekFrom::Start(offset)).await?;
 
         let eocdr = Ops::new(&mut self.reader, &opts).eocdr().await?;
-        let mut ceocdr = CEOCDR { eocdr, eocdr64: None, eocdl64: None };
+        let mut ceocdr = CEOCDR { eocdr, eocdr64h: None, eocdl64h: None };
 
-        if opts.validate_eor_is_eoa {
+        if opts.validate_eoa_is_eor {
             // TODO: We should be able to do this without any seeks. Though, attempting a one-byte
             //       read might be equivalent performance wise, not sure. This is clean anyway.
 
@@ -130,8 +144,8 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> SeekOps<R> {
         }
 
         if let Some((locator, record)) = SeekOps::new(&mut self.reader).zip64(eocdr_offset, eor, &opts).await? {
-            ceocdr.eocdr64 = Some(record);
-            ceocdr.eocdl64 = Some(locator);
+            ceocdr.eocdr64h = Some(record);
+            ceocdr.eocdl64h = Some(locator);
         }
 
         let offset = crate::base::read1::valid_offset(ceocdr.cd_offset()?, eor)?;
@@ -223,7 +237,7 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> SeekOps<R> {
         let offset = crate::base::read1::valid_offset(cdr.lfh_offset()?, eor)?;
         self.reader.seek(SeekFrom::Start(offset)).await?;
 
-        let mut lf = Ops::new(&mut self.reader, opts).lf().await?;
+        let mut lf = Ops::new(&mut self.reader, opts).lf(true).await?;
         crate::base::read1::valid::validate_file(&lf, &cdr, opts)?;
 
         if cdr.cdrh.gpf.data_descriptor() {

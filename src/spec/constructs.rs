@@ -16,7 +16,7 @@ use crate::{error::{Result, ZipError}, spec::{extra::{EF, EFD, EFHID, EI64, efs}
 
 #[binrw]
 #[brw(little)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// A local file. This struct provides ZIP64-aware accessors.
 pub struct LF {
     pub lfh: LFH,
@@ -61,7 +61,7 @@ fn combined_accessor_ecodr_u16(zip16: u16, ceocdr: &CEOCDR, accessor: impl Fn(&E
         return Ok(zip16.into());
     }
 
-    if let Some(record) = &ceocdr.eocdr64 {
+    if let Some(record) = &ceocdr.eocdr64h {
         return Ok(accessor(record));
     }
     
@@ -73,7 +73,7 @@ fn combined_accessor_ecodr_u32(zip32: u32, ceocdr: &CEOCDR, accessor: impl Fn(&E
         return Ok(zip32.into());
     }
 
-    if let Some(record) = &ceocdr.eocdr64 {
+    if let Some(record) = &ceocdr.eocdr64h {
         return Ok(accessor(record));
     }
     
@@ -85,7 +85,7 @@ fn combined_accessor_ecodr_disk(zip32: u16, ceocdr: &CEOCDR, accessor: impl Fn(&
         return Ok(zip32.into());
     }
 
-    if let Some(record) = &ceocdr.eocdr64 {
+    if let Some(record) = &ceocdr.eocdr64h {
         return Ok(accessor(record));
     }
     
@@ -144,21 +144,25 @@ pub struct EOCDR {
 #[derive(Clone, Debug)]
 pub struct CEOCDR {
     pub eocdr: EOCDR,
-    pub eocdr64: Option<EOCDR64H>,
-    pub eocdl64: Option<EOCDL64H>,
+    pub eocdr64h: Option<EOCDR64H>,
+    pub eocdl64h: Option<EOCDL64H>,
 }
 
 impl CEOCDR {
+    pub(crate) fn has_xor_headers(&self) -> bool {
+        let xor1 = self.eocdl64h.is_some() && self.eocdr64h.is_none();
+        let xor2 = self.eocdl64h.is_none() && self.eocdr64h.is_some();
+
+        xor1 || xor2
+    }
+
     /// Returns whether this archive is a ZIP64 archive.
     pub fn is_zip64(&self) -> bool {
-        let xor1 = self.eocdl64.is_some() && self.eocdr64.is_none();
-        let xor2 = self.eocdl64.is_none() && self.eocdr64.is_some();
-
-        if xor1 || xor2 {
+        if self.has_xor_headers() {
             unreachable!("we should have returned an Err previously if we had an XOR situation");
         }
 
-        self.eocdr64.is_some() && self.eocdl64.is_some()
+        self.eocdr64h.is_some() && self.eocdl64h.is_some()
     }
 
     /// A ZIP-64-aware accessor for the offset of the start of the central directory.
