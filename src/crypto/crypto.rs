@@ -122,6 +122,26 @@ impl ZipCrypto {
         }
     }
 
+    /// Returns a snapshot of the current key state.
+    pub(crate) fn save_keys(&self) -> (u32, u32, u32) {
+        (self.keys[0], self.keys[1], self.keys[2])
+    }
+
+    /// Restores the key state from a snapshot previously captured with [`ZipCrypto::save_keys`].
+    pub(crate) fn restore_keys(&mut self, keys: (u32, u32, u32)) {
+        self.keys = [keys.0, keys.1, keys.2];
+    }
+
+    /// Advances the key state over the given plaintext without producing any output.
+    ///
+    /// This mirrors the key update performed by [`ZipCrypto::encrypt_byte`] and is used to
+    /// resynchronise the state after a partial write of previously encrypted data.
+    pub(crate) fn advance_keys(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.update_keys(byte);
+        }
+    }
+
     /// Encrypt a slice of data, returning new encrypted data
     #[allow(dead_code)]
     pub fn encrypt_data_owned(&mut self, data: &[u8]) -> Vec<u8> {
